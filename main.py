@@ -30,7 +30,13 @@ from services.filter_service import (
     search_coin,
 )
 from services.statistics import calculate_statistics
+from services.web_app import create_app
 from utils.logger import logger
+
+# Top-level application exports for WSGI, ASGI, and serverless runtimes
+app = create_app()
+application = app
+handler = app
 
 
 def format_currency_display(val: Optional[float]) -> str:
@@ -303,10 +309,45 @@ def interactive_cli() -> None:
             print("\n[ERROR] Invalid option. Please enter a number between 1 and 10.\n")
 
 
+def run_web_server(host: str = "127.0.0.1", port: int = 8000) -> None:
+    """Runs the built-in HTTP development server."""
+    from wsgiref.simple_server import make_server
+    print("\n=========================================")
+    print("   CRYPTOPULSE WEB SERVER RUNNING")
+    print("=========================================")
+    print(f" URL: http://{host}:{port}/")
+    print(f" API: http://{host}:{port}/api/latest")
+    print(" Press Ctrl+C to stop the server.")
+    print("=========================================\n")
+    try:
+        with make_server(host, port, app) as httpd:
+            httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\n[INFO] Web server stopped.")
+
+
 def main() -> None:
     """Main CLI parser and dispatcher."""
     parser = argparse.ArgumentParser(
         description="Cryptocurrency Price Tracker - Live Automated Market Data Scraper"
+    )
+    parser.add_argument(
+        "--web",
+        "--server",
+        action="store_true",
+        help="Launch the real-time web dashboard and REST API server.",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port to bind the web server to (default: 8000)",
+    )
+    parser.add_argument(
+        "--host",
+        type=str,
+        default="127.0.0.1",
+        help="Host address to bind the web server to (default: 127.0.0.1)",
     )
     parser.add_argument(
         "--once",
@@ -333,7 +374,9 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.once:
+    if args.web:
+        run_web_server(host=args.host, port=args.port)
+    elif args.once:
         run_once(limit=args.limit)
     elif args.auto:
         run_auto(interval=args.interval, limit=args.limit)

@@ -164,7 +164,24 @@ Executes a single live scraping cycle, persists results to CSV files, prints for
 python main.py --once
 ```
 
-### 3. Automated Recurring Mode (`--auto`)
+### 3. Web Dashboard & Server Mode (`--web` / `app` export)
+Launches the interactive real-time cryptocurrency web dashboard and REST API endpoints:
+```powershell
+python main.py --web
+# Or specify a custom port
+python main.py --web --port 8000
+```
+Open **`http://localhost:8000`** in your browser to access:
+- Live market statistics overview cards.
+- Real-time search & instant filtering.
+- One-click **⚡ Scrape Live Data** trigger.
+- Historical data inspection modal.
+- Standard REST API endpoints (`/api/latest`, `/api/history`, `/api/stats`, `/api/scrape`).
+
+> [!NOTE]
+> [main.py](file:///c:/Users/santh/OneDrive/Desktop/Crypto%20project/main.py) exports top-level `app`, `application`, and `handler` variables compatible with standard WSGI, ASGI (Uvicorn/FastAPI style), and serverless hosting environments.
+
+### 4. Automated Recurring Mode (`--auto`)
 Runs continuously at configured intervals (e.g. every 300 seconds), periodically updating `data/crypto_latest.csv` and appending records to `data/crypto_history.csv`:
 ```powershell
 python main.py --auto
