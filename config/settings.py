@@ -47,8 +47,15 @@ LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
 DATA_DIR: Path = BASE_DIR / "data"
 LOGS_DIR: Path = BASE_DIR / "logs"
 
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-LOGS_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+except (OSError, PermissionError):
+    pass
+
+try:
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+except (OSError, PermissionError):
+    pass
 
 LATEST_CSV_PATH: Path = DATA_DIR / "crypto_latest.csv"
 HISTORY_CSV_PATH: Path = DATA_DIR / "crypto_history.csv"

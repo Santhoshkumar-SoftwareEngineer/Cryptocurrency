@@ -899,6 +899,71 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 """
 
 
+def fetch_live_market_fallback(limit: int = 10) -> List[CryptoCoin]:
+    """
+    Fetches real-time crypto market data via public HTTP API without requiring Chrome.
+    Used automatically in serverless runtimes like Vercel or when Selenium is unavailable.
+    """
+    import json
+    import urllib.request
+    from datetime import datetime
+
+    coins: List[CryptoCoin] = []
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Source 1: CoinCodex public API
+    try:
+        req = urllib.request.Request(
+            "https://coincodex.com/api/coincodex/get_coin_market_data/?limit=10",
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            for i, item in enumerate(data[:limit], start=1):
+                coins.append(CryptoCoin(
+                    rank=i,
+                    name=str(item.get("name", "")),
+                    symbol=str(item.get("symbol", "")).upper(),
+                    price=float(item.get("last_price_usd", 0.0) or 0.0),
+                    change_24h=float(item.get("price_change_1D_percent", 0.0) or 0.0),
+                    market_cap=float(item.get("market_cap_usd", 0.0) or 0.0),
+                    volume_24h=float(item.get("volume_24_usd", 0.0) or 0.0),
+                    timestamp=ts,
+                ))
+            if len(coins) >= limit:
+                return coins
+    except Exception as e:
+        logger.warning(f"CoinCodex fallback failed: {e}")
+
+    # Source 2: CoinCap public API
+    try:
+        req = urllib.request.Request(
+            f"https://api.coincap.io/v2/assets?limit={limit}",
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+            data = payload.get("data", [])
+            coins = []
+            for item in data[:limit]:
+                coins.append(CryptoCoin(
+                    rank=int(item.get("rank", 0)),
+                    name=str(item.get("name", "")),
+                    symbol=str(item.get("symbol", "")).upper(),
+                    price=float(item.get("priceUsd", 0.0) or 0.0),
+                    change_24h=float(item.get("changePercent24Hr", 0.0) or 0.0),
+                    market_cap=float(item.get("marketCapUsd", 0.0) or 0.0),
+                    volume_24h=float(item.get("volumeUsd24Hr", 0.0) or 0.0),
+                    timestamp=ts,
+                ))
+            if coins:
+                return coins
+    except Exception as e:
+        logger.warning(f"CoinCap fallback failed: {e}")
+
+    return coins
+
+
 class CryptoWebApp:
     """
     Universal WSGI & ASGI compatible Web Application.
@@ -914,22 +979,25 @@ class CryptoWebApp:
 
         elif clean_path == "/api/latest":
             records = load_latest(LATEST_CSV_PATH)
-            # If no CSV records exist, scrape once automatically
+            # If no CSV records exist, fetch/scrape once automatically
             if not records:
                 try:
                     scraper = CoinMarketCapScraper(headless=True)
                     coins = scraper.scrape_top_coins(limit=SCRAPE_LIMIT)
-                    if coins:
-                        save_latest(coins)
-                        append_history(coins)
-                        records = [c.to_dict() for c in coins]
                 except Exception as e:
-                    logger.error(f"Auto-scrape in /api/latest failed: {e}")
-                    records = []
+                    logger.warning(f"Selenium scrape in /api/latest failed ({e}), using HTTP fallback.")
+                    coins = fetch_live_market_fallback(limit=SCRAPE_LIMIT)
+
+                if coins:
+                    save_latest(coins)
+                    append_history(coins)
+                    records = [c.to_dict() for c in coins]
             return 200, "application/json", json.dumps(records, default=str).encode("utf-8")
 
         elif clean_path == "/api/history":
             history = load_history(HISTORY_CSV_PATH)
+            if not history:
+                history = load_latest(LATEST_CSV_PATH)
             return 200, "application/json", json.dumps(history, default=str).encode("utf-8")
 
         elif clean_path == "/api/stats":
@@ -939,19 +1007,25 @@ class CryptoWebApp:
 
         elif clean_path == "/api/scrape":
             if method.upper() in ["POST", "GET"]:
+                coins = None
                 try:
                     scraper = CoinMarketCapScraper(headless=True)
                     coins = scraper.scrape_top_coins(limit=SCRAPE_LIMIT)
-                    if coins:
-                        save_latest(coins)
-                        append_history(coins)
-                        coin_dicts = [c.to_dict() for c in coins]
-                        return 200, "application/json", json.dumps({"success": True, "coins": coin_dicts}, default=str).encode("utf-8")
-                    else:
-                        return 500, "application/json", json.dumps({"success": False, "error": "No coins returned from scraper"}).encode("utf-8")
                 except Exception as e:
-                    logger.error(f"Error during on-demand scrape: {e}")
-                    return 500, "application/json", json.dumps({"success": False, "error": str(e)}).encode("utf-8")
+                    logger.warning(f"Selenium scrape failed ({e}), using HTTP live market fallback.")
+                    coins = fetch_live_market_fallback(limit=SCRAPE_LIMIT)
+
+                if coins:
+                    save_latest(coins)
+                    append_history(coins)
+                    coin_dicts = [c.to_dict() for c in coins]
+                    return 200, "application/json", json.dumps({"success": True, "coins": coin_dicts}, default=str).encode("utf-8")
+                else:
+                    # Return latest cached records if live scraping fails
+                    latest = load_latest(LATEST_CSV_PATH)
+                    if latest:
+                        return 200, "application/json", json.dumps({"success": True, "coins": latest}, default=str).encode("utf-8")
+                    return 500, "application/json", json.dumps({"success": False, "error": "Unable to fetch live cryptocurrency data."}).encode("utf-8")
             else:
                 return 405, "application/json", json.dumps({"error": "Method Not Allowed"}).encode("utf-8")
 

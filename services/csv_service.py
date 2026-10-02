@@ -40,36 +40,42 @@ def _coin_to_row(coin: CryptoCoin) -> Dict[str, Any]:
 def save_latest(coins: List[CryptoCoin], file_path: Union[str, Path] = LATEST_CSV_PATH) -> None:
     """
     Overwrites the latest crypto CSV file with the newest scraping results.
+    Gracefully falls back to /tmp if the root filesystem is read-only.
     """
-    try:
-        path = Path(file_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
+    paths_to_try = [Path(file_path), Path("/tmp/crypto_latest.csv")]
+    for path in paths_to_try:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
 
-        if HAS_PANDAS and pd is not None:
-            try:
-                data = [c.to_dict() for c in coins]
-                df = pd.DataFrame(data)
-                if df.empty:
-                    df = pd.DataFrame(columns=CSV_COLUMNS)
-                else:
-                    df = df[CSV_COLUMNS]
-                df.to_csv(path, index=False, encoding="utf-8")
-                logger.info(f"Saved latest data ({len(coins)} coins) to {path}")
-                return
-            except Exception as e:
-                logger.warning(f"pandas save_latest failed ({e}), falling back to standard csv module.")
+            if HAS_PANDAS and pd is not None:
+                try:
+                    data = [c.to_dict() for c in coins]
+                    df = pd.DataFrame(data)
+                    if df.empty:
+                        df = pd.DataFrame(columns=CSV_COLUMNS)
+                    else:
+                        df = df[CSV_COLUMNS]
+                    df.to_csv(path, index=False, encoding="utf-8")
+                    logger.info(f"Saved latest data ({len(coins)} coins) to {path}")
+                    return
+                except Exception:
+                    pass
 
-        # Standard library CSV fallback
-        with open(path, mode="w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
-            writer.writeheader()
-            for coin in coins:
-                writer.writerow(_coin_to_row(coin))
+            # Standard library CSV fallback
+            with open(path, mode="w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
+                writer.writeheader()
+                for coin in coins:
+                    writer.writerow(_coin_to_row(coin))
 
-        logger.info(f"Saved latest data ({len(coins)} coins) to {path}")
-    except Exception as e:
-        logger.error(f"Error saving latest data to CSV {file_path}: {e}")
-        raise
+            logger.info(f"Saved latest data ({len(coins)} coins) to {path}")
+            return
+        except (OSError, PermissionError) as e:
+            logger.warning(f"Unable to write to {path} ({e}), attempting next writable location...")
+            continue
+        except Exception as e:
+            logger.error(f"Error saving latest data to CSV {file_path}: {e}")
+            break
 
 
 def append_history(coins: List[CryptoCoin], file_path: Union[str, Path] = HISTORY_CSV_PATH) -> None:
@@ -80,81 +86,93 @@ def append_history(coins: List[CryptoCoin], file_path: Union[str, Path] = HISTOR
     if not coins:
         return
 
-    try:
-        path = Path(file_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
+    paths_to_try = [Path(file_path), Path("/tmp/crypto_history.csv")]
+    for path in paths_to_try:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            file_exists = path.exists() and path.stat().st_size > 0
 
-        file_exists = path.exists() and path.stat().st_size > 0
+            if HAS_PANDAS and pd is not None:
+                try:
+                    data = [c.to_dict() for c in coins]
+                    df = pd.DataFrame(data)[CSV_COLUMNS]
+                    df.to_csv(
+                        path,
+                        mode="a" if file_exists else "w",
+                        header=not file_exists,
+                        index=False,
+                        encoding="utf-8"
+                    )
+                    logger.info(f"Historical data appended ({len(coins)} records) to {path}")
+                    return
+                except Exception:
+                    pass
 
-        if HAS_PANDAS and pd is not None:
-            try:
-                data = [c.to_dict() for c in coins]
-                df = pd.DataFrame(data)[CSV_COLUMNS]
-                df.to_csv(
-                    path,
-                    mode="a" if file_exists else "w",
-                    header=not file_exists,
-                    index=False,
-                    encoding="utf-8"
-                )
-                logger.info(f"Historical data appended ({len(coins)} records) to {path}")
-                return
-            except Exception as e:
-                logger.warning(f"pandas append_history failed ({e}), falling back to standard csv module.")
+            # Standard library CSV fallback
+            with open(path, mode="a" if file_exists else "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
+                if not file_exists:
+                    writer.writeheader()
+                for coin in coins:
+                    writer.writerow(_coin_to_row(coin))
 
-        # Standard library CSV fallback
-        with open(path, mode="a" if file_exists else "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
-            if not file_exists:
-                writer.writeheader()
-            for coin in coins:
-                writer.writerow(_coin_to_row(coin))
-
-        logger.info(f"Historical data appended ({len(coins)} records) to {path}")
-    except Exception as e:
-        logger.error(f"Error appending history data to CSV {file_path}: {e}")
-        raise
+            logger.info(f"Historical data appended ({len(coins)} records) to {path}")
+            return
+        except (OSError, PermissionError) as e:
+            logger.warning(f"Unable to write history to {path} ({e}), trying fallback location...")
+            continue
+        except Exception as e:
+            logger.error(f"Error appending history data to CSV {file_path}: {e}")
+            break
 
 
 def load_latest(file_path: Union[str, Path] = LATEST_CSV_PATH) -> List[Dict[str, Any]]:
     """
     Loads latest crypto records from CSV as a list of dictionaries.
+    Checks /tmp first (for recent serverless updates) then project directory.
     """
-    path = Path(file_path)
-    if not path.exists() or path.stat().st_size == 0:
-        logger.warning(f"Latest CSV not found or empty: {file_path}")
-        return []
+    paths_to_check = [Path("/tmp/crypto_latest.csv"), Path(file_path)]
 
-    records = []
-    try:
-        with open(path, mode="r", newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                # Convert numeric fields
-                record = dict(row)
-                for num_field in ("rank",):
-                    if record.get(num_field):
-                        try:
-                            record[num_field] = int(record[num_field])
-                        except ValueError:
-                            pass
-                for float_field in ("price", "change_24h", "market_cap", "volume_24h"):
-                    if record.get(float_field) and record[float_field] != "":
-                        try:
-                            record[float_field] = float(record[float_field])
-                        except ValueError:
+    for path in paths_to_check:
+        if not path.exists() or path.stat().st_size == 0:
+            continue
+
+        records = []
+        try:
+            with open(path, mode="r", newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    record = dict(row)
+                    for num_field in ("rank",):
+                        if record.get(num_field):
+                            try:
+                                record[num_field] = int(record[num_field])
+                            except ValueError:
+                                pass
+                    for float_field in ("price", "change_24h", "market_cap", "volume_24h"):
+                        if record.get(float_field) and record[float_field] != "":
+                            try:
+                                record[float_field] = float(record[float_field])
+                            except ValueError:
+                                record[float_field] = None
+                        else:
                             record[float_field] = None
-                    else:
-                        record[float_field] = None
-                records.append(record)
-        return records
-    except Exception as e:
-        logger.error(f"Error reading latest CSV {file_path}: {e}")
-        return []
+                    records.append(record)
+            if records:
+                return records
+        except Exception as e:
+            logger.error(f"Error reading CSV {path}: {e}")
+            continue
+
+    return []
 
 
 def load_history(file_path: Union[str, Path] = HISTORY_CSV_PATH) -> List[Dict[str, Any]]:
     """
     Loads historical crypto records from CSV as a list of dictionaries.
     """
-    return load_latest(file_path)
+    paths_to_check = [Path("/tmp/crypto_history.csv"), Path(file_path)]
+    for path in paths_to_check:
+        if path.exists() and path.stat().st_size > 0:
+            return load_latest(path)
+    return []
